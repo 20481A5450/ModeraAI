@@ -1,0 +1,9 @@
+fastapi 
+uvicorn 
+celery 
+redis 
+psycopg2 
+pydantic 
+alembic 
+prometheus_client 
+pytest
