@@ -7,3 +7,5 @@ pydantic
 alembic 
 prometheus_client 
 pytest
+sqlalchemy 
+alembic
