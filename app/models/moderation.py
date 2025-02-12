@@ -1,13 +1,14 @@
-from sqlalchemy import Column, Integer, Text, Boolean, DateTime, func
-from app.core.database import Base  # Import after Base is defined
+from sqlalchemy import Column, Integer, String, Boolean, JSON
+from app.core.database import Base
 
 class ModerationResult(Base):
     __tablename__ = "moderation_results"
 
     id = Column(Integer, primary_key=True, index=True)
-    content = Column(Text, nullable=False)
-    is_flagged = Column(Boolean, nullable=False)
-    created_at = Column(DateTime, server_default=func.now())
+    text = Column(String, nullable=False)
+    flagged = Column(Boolean, nullable=False)
+    categories = Column(JSON, nullable=False)
+
 
 from pydantic import BaseModel
 from datetime import datetime
