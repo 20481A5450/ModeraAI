@@ -10,12 +10,10 @@ from app.core.database import Base, engine, SessionLocal
 from app.api.v1.schemas import TextModerationRequest, TextModerationResponse
 from app.models.moderation import ModerationResult
 from app.services.moderation import moderate_text
+from app.core.cache import get_redis
 
 # Load OpenAI API Key
 # OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-# Initialize Redis cache
-redis_client = redis.Redis(host="localhost", port=6379, db=0, decode_responses=True)
 
 def get_db():
     db = SessionLocal()
@@ -85,14 +83,17 @@ async def health_check():
 
 #     return response_data
 
+from fastapi import Request
+
 @router.post("/moderate/text")
-async def moderate_text_endpoint(payload: dict):
+async def moderate_text_endpoint(request: Request):
+    payload = await request.json()
     text = payload.get("text")
     if not text:
         raise HTTPException(status_code=400, detail="No text provided")
 
     # Moderate the text
-    result = moderate_text(text)
+    result = await moderate_text(text)
 
     # Save result to database
     db = SessionLocal()
@@ -114,17 +115,18 @@ async def get_moderation_result(id: int, db: Session = Depends(get_db)):
     Retrieve a moderation result by ID.
     Uses Redis caching for faster access.
     """
+    redis_client = await get_redis()  # Await the async Redis connection
     cache_key = f"moderation:{id}"
 
     # Check if result exists in Redis cache
-    cached_result = redis_client.get(cache_key)
+    cached_result = await redis_client.get(cache_key)
     if cached_result:
         print("Cache hit!")
         return json.loads(cached_result)
 
     # Fetch from database if not in cache
     result = db.query(ModerationResult).filter(ModerationResult.id == id).first()
-    print("Cache miss!-Direct from DB")
+    print("Cache miss! - Direct from DB")
     if not result:
         raise HTTPException(status_code=404, detail="Moderation result not found")
 
@@ -137,6 +139,52 @@ async def get_moderation_result(id: int, db: Session = Depends(get_db)):
     }
 
     # Store result in Redis for caching
-    redis_client.set(cache_key, json.dumps(response), ex=3600)  # Cache for 1 hour
+    await redis_client.set(cache_key, json.dumps(response), ex=3600)
 
     return response
+
+@router.get("/stats")
+async def get_moderation_stats(db: Session = Depends(get_db)):
+    """
+    Get moderation statistics (total moderated, flagged vs non-flagged, category breakdown).
+    Uses Redis caching for efficiency.
+    """
+    redis_client = await get_redis()  # Await the async Redis connection
+    cache_key = "moderation_stats"
+
+    # Check Redis cache first
+    cached_stats = await redis_client.get(cache_key)
+    if cached_stats:
+        print("Cache hit!")
+        return json.loads(cached_stats)
+
+    # Fetch stats from the database
+    total_count = db.query(ModerationResult).count()
+    flagged_count = db.query(ModerationResult).filter(ModerationResult.flagged == True).count()
+    non_flagged_count = total_count - flagged_count
+
+    # Get category-wise breakdown
+    category_counts = {}
+    all_results = db.query(ModerationResult.categories).all()
+    for result in all_results:
+        if result.categories:  # Ensure categories exist
+            for category, score in result.categories.items():
+                if category not in category_counts:
+                    category_counts[category] = 0
+                category_counts[category] += 1
+
+    print("Cache miss! - Direct from DB")
+
+    # Prepare response
+    stats = {
+        "total_moderated": total_count,
+        "flagged_count": flagged_count,
+        "non_flagged_count": non_flagged_count,
+        "category_breakdown": category_counts,
+    }
+
+    # Store in Redis (cache for 5 minutes)
+    await redis_client.set(cache_key, json.dumps(stats), ex=300)
+
+    return stats
+
