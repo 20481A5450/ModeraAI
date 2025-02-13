@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from app.core.database import Base, engine, SessionLocal
 from app.api.v1.schemas import TextModerationRequest, TextModerationResponse
 from app.models.moderation import ModerationResult
+from app.services.moderation import moderate_text
 
 # Load OpenAI API Key
 # OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -83,7 +84,6 @@ async def health_check():
 #     redis_client.setex(cache_key, 3600, json.dumps(response_data))  # Cache for 1 hour
 
 #     return response_data
-from app.services.moderation import moderate_text
 
 @router.post("/moderate/text")
 async def moderate_text_endpoint(payload: dict):
@@ -107,3 +107,36 @@ async def moderate_text_endpoint(payload: dict):
     db.close()
 
     return result   
+
+@router.get("/moderation/{id}")
+async def get_moderation_result(id: int, db: Session = Depends(get_db)):
+    """
+    Retrieve a moderation result by ID.
+    Uses Redis caching for faster access.
+    """
+    cache_key = f"moderation:{id}"
+
+    # Check if result exists in Redis cache
+    cached_result = redis_client.get(cache_key)
+    if cached_result:
+        print("Cache hit!")
+        return json.loads(cached_result)
+
+    # Fetch from database if not in cache
+    result = db.query(ModerationResult).filter(ModerationResult.id == id).first()
+    print("Cache miss!-Direct from DB")
+    if not result:
+        raise HTTPException(status_code=404, detail="Moderation result not found")
+
+    # Serialize response
+    response = {
+        "id": result.id,
+        "text": result.text,
+        "flagged": result.flagged,
+        "categories": result.categories,
+    }
+
+    # Store result in Redis for caching
+    redis_client.set(cache_key, json.dumps(response), ex=3600)  # Cache for 1 hour
+
+    return response
