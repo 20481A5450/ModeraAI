@@ -1,4 +1,4 @@
-import openai
+# import openai
 import os
 import json
 import redis
@@ -11,7 +11,7 @@ from app.api.v1.schemas import TextModerationRequest, TextModerationResponse
 from app.models.moderation import ModerationResult
 
 # Load OpenAI API Key
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Initialize Redis cache
 redis_client = redis.Redis(host="localhost", port=6379, db=0, decode_responses=True)
@@ -43,41 +43,67 @@ async def health_check():
     else:
         return {"status": "Database connection failed"}
 
-@router.post("/moderate/text", response_model=TextModerationResponse, tags=["Moderation"])
-async def moderate_text(request: TextModerationRequest, db: Session = Depends(get_db)):
-    """Moderates text content using OpenAI's Moderation API and stores the result."""
+# @router.post("/moderate/text", response_model=TextModerationResponse, tags=["Moderation"])
+# async def moderate_text(request: TextModerationRequest, db: Session = Depends(get_db)):
+#     """Moderates text content using OpenAI's Moderation API and stores the result."""
 
-    # Check Redis cache first
-    cache_key = f"moderation:{request.text}"
-    cached_result = redis_client.get(cache_key)
+#     # Check Redis cache first
+#     cache_key = f"moderation:{request.text}"
+#     cached_result = redis_client.get(cache_key)
     
-    if cached_result:
-        return TextModerationResponse(**json.loads(cached_result))
+#     if cached_result:
+#         return TextModerationResponse(**json.loads(cached_result))
 
-    # Call OpenAI Moderation API
-    try:
-        response = openai.Moderation.create(input=request.text, api_key=OPENAI_API_KEY)
-        moderation_result = response["results"][0]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OpenAI API error: {str(e)}")
+#     # Call OpenAI Moderation API
+#     try:
+#         print(OPENAI_API_KEY)
+#         response = openai.Moderation.create(input=request.text, api_key=OPENAI_API_KEY)
+#         print(response)
+#         moderation_result = response["results"][0]
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"OpenAI API error: {str(e)}")
 
-    # Store moderation result in PostgreSQL
-    moderation_entry = ModerationResult(
-        text=request.text,
-        flagged=moderation_result["flagged"],
-        categories=moderation_result["categories"]
+#     # Store moderation result in PostgreSQL
+#     moderation_entry = ModerationResult(
+#         text=request.text,
+#         flagged=moderation_result["flagged"],
+#         categories=moderation_result["categories"]
+#     )
+#     db.add(moderation_entry)
+#     db.commit()
+#     db.refresh(moderation_entry)
+
+#     # Cache the response in Redis
+#     response_data = {
+#         "id": moderation_entry.id,
+#         "text": moderation_entry.text,
+#         "flagged": moderation_entry.flagged,
+#         "categories": moderation_entry.categories,
+#     }
+#     redis_client.setex(cache_key, 3600, json.dumps(response_data))  # Cache for 1 hour
+
+#     return response_data
+from app.services.moderation import moderate_text
+
+@router.post("/moderate/text")
+async def moderate_text_endpoint(payload: dict):
+    text = payload.get("text")
+    if not text:
+        raise HTTPException(status_code=400, detail="No text provided")
+
+    # Moderate the text
+    result = moderate_text(text)
+
+    # Save result to database
+    db = SessionLocal()
+    db_entry = ModerationResult(
+        text=result["text"],
+        flagged=result["flagged"],
+        categories=result["categories"]
     )
-    db.add(moderation_entry)
+    db.add(db_entry)
     db.commit()
-    db.refresh(moderation_entry)
+    db.refresh(db_entry)
+    db.close()
 
-    # Cache the response in Redis
-    response_data = {
-        "id": moderation_entry.id,
-        "text": moderation_entry.text,
-        "flagged": moderation_entry.flagged,
-        "categories": moderation_entry.categories,
-    }
-    redis_client.setex(cache_key, 3600, json.dumps(response_data))  # Cache for 1 hour
-
-    return response_data
+    return result   
