@@ -1,19 +1,28 @@
-# import openai
 import os
 import json
+import io
 import redis
-from fastapi import APIRouter, Depends, HTTPException
+import requests
+from PIL import Image
+from dotenv import load_dotenv
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Request
 from sqlalchemy.orm import Session
+from celery.result import AsyncResult
 from app.core.database import SessionLocal
-from fastapi import APIRouter
-from app.core.database import Base, engine, SessionLocal
 from app.api.v1.schemas import TextModerationRequest, TextModerationResponse
 from app.models.moderation import ModerationResult
 from app.services.moderation import moderate_text
 from app.core.cache import get_redis
+# from app.workers.tasks import test_celery
 
-# Load OpenAI API Key
-# OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+load_dotenv()
+
+GOOGLE_MODERATION_API_KEY = os.getenv("GOOGLE_MODERATION_API_KEY")
+if not GOOGLE_MODERATION_API_KEY:
+    raise ValueError("Google Moderation API key is missing. Set GOOGLE_MODERATION_API_KEY in .env file.")
+
+PERSPECTIVE_API_URL = "https://commentanalyzer.googleapis.com/v1alpha1/comments:analyze"
+GOOGLE_VISION_API_URL = "https://vision.googleapis.com/v1/images:annotate"
 
 def get_db():
     db = SessionLocal()
@@ -24,167 +33,214 @@ def get_db():
 
 router = APIRouter()
 
+
 @router.get("/")
-async def read_root():
-    return {"message": "Welcome to ModeraAI"}
+async def root():
+    return {"message": "Welcome to ModeraAI - go to /start to check system status"}
 
-@router.get("/health")
-async def health_check():
-    if engine:
-    # if engine:
-    #     from sqlalchemy import text
-    #     db = SessionLocal()
-    #     result = db.execute(text("SELECT * FROM information_schema.tables WHERE table_schema='public'")).mappings().all()
-    #     tables = [dict(row) for row in result]
-    #     db.close()
-        # return {"status": "Database connection successful", "tables": tables}
-        return {"status":"ok", "message":"ModeraAI is running"}
-    else:
-        return {"status": "Database connection failed"}
+@router.get("/start")
+async def start_system():
+    """Endpoint to check system status"""
 
-# @router.post("/moderate/text", response_model=TextModerationResponse, tags=["Moderation"])
-# async def moderate_text(request: TextModerationRequest, db: Session = Depends(get_db)):
-#     """Moderates text content using OpenAI's Moderation API and stores the result."""
+    # Check database
+    try:
+        db = SessionLocal()
+        if db.execute("SELECT 1"): # Simple query to check DB connection
+            pass  
+        else:
+            db_status = f"DB Status Check - Postgres Server is not Running: {str(e)}"  
+        db.close()
+        db_status = "DB Status Check - Postgres is Up and Running"
+    except Exception as e:
+        db_status = f"DB Status Check - Postgres Server is not Running: {str(e)}"
 
-#     # Check Redis cache first
-#     cache_key = f"moderation:{request.text}"
-#     cached_result = redis_client.get(cache_key)
+    # Check Redis
+    try:
+        redis_client.set("test", "OK", ex=5)  # Set test value
+        redis_status = "Redis Status Check - Redis is Up and Running"
+    except Exception as e:
+        redis_status = f"Redis Status Check - Redis Server is not Running: {str(e)}"
+
+    # Check Celery
+    # try:
+    #     task = test_celery.delay()
+    #     result = AsyncResult(task.id)
+    #     celery_status = result.state  # Expected to be 'PENDING'
+    #     if celery_status != 'PENDING':
+    #         celery_status = "Celery Status Check - Celery is Up and Running"
+    #     else:
+    #         celery_status = "Celery Status Check - Celery Task is Pending"
+    # except Exception as e:
+    #     celery_status = f"Celery Status Check - Celery Server is not Running: {str(e)}"
+
+    return {
+        "database": db_status,
+        "redis": redis_status
+        # "celery": celery_status
+    }
     
-#     if cached_result:
-#         return TextModerationResponse(**json.loads(cached_result))
-
-#     # Call OpenAI Moderation API
-#     try:
-#         print(OPENAI_API_KEY)
-#         response = openai.Moderation.create(input=request.text, api_key=OPENAI_API_KEY)
-#         print(response)
-#         moderation_result = response["results"][0]
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=f"OpenAI API error: {str(e)}")
-
-#     # Store moderation result in PostgreSQL
-#     moderation_entry = ModerationResult(
-#         text=request.text,
-#         flagged=moderation_result["flagged"],
-#         categories=moderation_result["categories"]
-#     )
-#     db.add(moderation_entry)
-#     db.commit()
-#     db.refresh(moderation_entry)
-
-#     # Cache the response in Redis
-#     response_data = {
-#         "id": moderation_entry.id,
-#         "text": moderation_entry.text,
-#         "flagged": moderation_entry.flagged,
-#         "categories": moderation_entry.categories,
-#     }
-#     redis_client.setex(cache_key, 3600, json.dumps(response_data))  # Cache for 1 hour
-
-#     return response_data
-
-from fastapi import Request
-
 @router.post("/moderate/text")
-async def moderate_text_endpoint(request: Request):
-    payload = await request.json()
-    text = payload.get("text")
+async def moderate_text_endpoint(request: TextModerationRequest, db: Session = Depends(get_db)):
+    text = request.text
     if not text:
         raise HTTPException(status_code=400, detail="No text provided")
 
-    # Moderate the text
-    result = await moderate_text(text)
+    redis_client = await get_redis()
+    cache_key = f"moderation:text:{text}"
+    cached_result = await redis_client.get(cache_key)
+    if cached_result:
+        return json.loads(cached_result)
 
-    # Save result to database
-    db = SessionLocal()
+    request_data = {
+        "comment": {"text": text},
+        "languages": ["en"],
+        "requestedAttributes": {"TOXICITY": {}}
+    }
+    
+    response = requests.post(
+        f"{PERSPECTIVE_API_URL}?key={GOOGLE_MODERATION_API_KEY}", 
+        json=request_data
+    )
+    
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Google API error: {response.text}")
+    
+    print(response.json())
+    result = response.json()
+    toxicity_score = result["attributeScores"]["TOXICITY"]["summaryScore"]["value"]
+    flagged = toxicity_score > 0.5
+    
+    moderation_result = {
+        "text": text,
+        "flagged": flagged,
+        "categories": {"toxicity_score": toxicity_score}
+    }
+    
     db_entry = ModerationResult(
-        text=result["text"],
-        flagged=result["flagged"],
-        categories=result["categories"]
+        text=text, flagged=flagged, categories={"toxicity_score": toxicity_score}
     )
     db.add(db_entry)
     db.commit()
     db.refresh(db_entry)
-    db.close()
+    
+    await redis_client.setex(cache_key, 3600, json.dumps(moderation_result))
+    return moderation_result
 
-    return result   
+@router.post("/moderate/image")
+async def moderate_image_endpoint(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    Endpoint for image moderation using Google Vision API's SafeSearch Detection.
+    Supports JPEG and PNG formats.
+    """
+    if file.content_type not in ["image/jpeg", "image/png"]:
+        raise HTTPException(status_code=400, detail="Unsupported file format. Use JPEG or PNG.")
+
+    try:
+        # Read image bytes and validate the image
+        image_bytes = await file.read()
+        image = Image.open(io.BytesIO(image_bytes))
+        image.verify()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid image file: {str(e)}")
+
+    # Convert image to Base64
+    image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+
+    # Construct API request payload
+    vision_request = {
+        "requests": [{
+            "image": {"content": image_base64},
+            "features": [{"type": "SAFE_SEARCH_DETECTION"}]
+        }]
+    }
+
+    redis_client = await get_redis()
+    cache_key = f"moderation:image:{file.filename}"
+    cached_result = await redis_client.get(cache_key)
+    if cached_result:
+        return json.loads(cached_result)
+
+    # Call Google Vision API
+    response = requests.post(
+        f"{GOOGLE_VISION_API_URL}?key={GOOGLE_MODERATION_API_KEY}",
+        json=vision_request
+    )
+    response_data = response.json()
+
+    # Handle API response errors
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Google Vision API error: {response.text}")
+    
+    if "responses" not in response_data or not response_data["responses"]:
+        raise HTTPException(status_code=500, detail="Invalid response from Google Vision API.")
+
+    if "safeSearchAnnotation" not in response_data["responses"][0]:
+        raise HTTPException(status_code=500, detail=f"Unexpected API response: {response_data}")
+
+    # Extract SafeSearch annotations
+    annotations = response_data["responses"][0]["safeSearchAnnotation"]
+    flagged = annotations["adult"] in ["LIKELY", "VERY_LIKELY"] or annotations["violence"] in ["LIKELY", "VERY_LIKELY"]
+
+    # Prepare moderation result
+    moderation_result = {
+        "filename": file.filename,
+        "flagged": flagged,
+        "categories": annotations
+    }
+
+    # Store result in database
+    db_entry = ModerationResult(
+        text=file.filename, flagged=flagged, categories=annotations
+    )
+    db.add(db_entry)
+    db.commit()
+    db.refresh(db_entry)
+
+    # Cache the result for future requests
+    await redis_client.setex(cache_key, 3600, json.dumps(moderation_result))
+    return moderation_result
+
 
 @router.get("/moderation/{id}")
 async def get_moderation_result(id: int, db: Session = Depends(get_db)):
-    """
-    Retrieve a moderation result by ID.
-    Uses Redis caching for faster access.
-    """
-    redis_client = await get_redis()  # Await the async Redis connection
+    redis_client = await get_redis()
     cache_key = f"moderation:{id}"
-
-    # Check if result exists in Redis cache
     cached_result = await redis_client.get(cache_key)
     if cached_result:
-        print("Cache hit!")
         return json.loads(cached_result)
-
-    # Fetch from database if not in cache
+    
     result = db.query(ModerationResult).filter(ModerationResult.id == id).first()
-    print("Cache miss! - Direct from DB")
     if not result:
         raise HTTPException(status_code=404, detail="Moderation result not found")
-
-    # Serialize response
+    
     response = {
         "id": result.id,
         "text": result.text,
         "flagged": result.flagged,
         "categories": result.categories,
     }
-
-    # Store result in Redis for caching
+    
     await redis_client.set(cache_key, json.dumps(response), ex=3600)
-
     return response
 
 @router.get("/stats")
 async def get_moderation_stats(db: Session = Depends(get_db)):
-    """
-    Get moderation statistics (total moderated, flagged vs non-flagged, category breakdown).
-    Uses Redis caching for efficiency.
-    """
-    redis_client = await get_redis()  # Await the async Redis connection
+    redis_client = await get_redis()
     cache_key = "moderation_stats"
-
-    # Check Redis cache first
     cached_stats = await redis_client.get(cache_key)
     if cached_stats:
-        print("Cache hit!")
         return json.loads(cached_stats)
-
-    # Fetch stats from the database
+    
     total_count = db.query(ModerationResult).count()
     flagged_count = db.query(ModerationResult).filter(ModerationResult.flagged == True).count()
     non_flagged_count = total_count - flagged_count
-
-    # Get category-wise breakdown
-    category_counts = {}
-    all_results = db.query(ModerationResult.categories).all()
-    for result in all_results:
-        if result.categories:  # Ensure categories exist
-            for category, score in result.categories.items():
-                if category not in category_counts:
-                    category_counts[category] = 0
-                category_counts[category] += 1
-
-    print("Cache miss! - Direct from DB")
-
-    # Prepare response
+    
     stats = {
         "total_moderated": total_count,
         "flagged_count": flagged_count,
         "non_flagged_count": non_flagged_count,
-        "category_breakdown": category_counts,
     }
-
-    # Store in Redis (cache for 5 minutes)
+    
     await redis_client.set(cache_key, json.dumps(stats), ex=300)
-
     return stats
 

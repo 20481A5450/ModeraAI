@@ -1,5 +1,9 @@
 from sqlalchemy import Column, Integer, String, Boolean, JSON
 from app.core.database import Base
+from pydantic import BaseModel
+from datetime import datetime
+from typing import Optional
+
 
 class ModerationResult(Base):
     __tablename__ = "moderation_results"
@@ -8,11 +12,6 @@ class ModerationResult(Base):
     text = Column(String, nullable=False)
     flagged = Column(Boolean, nullable=False)
     categories = Column(JSON, nullable=False)
-
-
-from pydantic import BaseModel
-from datetime import datetime
-from typing import Optional
 
 class ModerationResultBase(BaseModel):
     content: str
