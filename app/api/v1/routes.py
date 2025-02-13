@@ -14,6 +14,7 @@ from app.models.moderation import ModerationResult
 from app.services.moderation import moderate_text
 from app.core.cache import get_redis
 # from app.workers.tasks import test_celery
+import base64
 
 load_dotenv()
 
@@ -130,9 +131,9 @@ async def moderate_text_endpoint(request: TextModerationRequest, db: Session = D
 async def moderate_image_endpoint(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """
     Endpoint for image moderation using Google Vision API's SafeSearch Detection.
-    Supports JPEG and PNG formats.
+    Supports JPG, JPEG and PNG formats.
     """
-    if file.content_type not in ["image/jpeg", "image/png"]:
+    if file.content_type not in ["image/jpeg", "image/png", "image/jpg"]:
         raise HTTPException(status_code=400, detail="Unsupported file format. Use JPEG or PNG.")
 
     try:
