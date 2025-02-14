@@ -1,10 +1,19 @@
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-import os
+from sqlalchemy.orm import declarative_base
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:root@localhost/moderaai")
+DATABASE_URL = "postgresql://postgres:root@localhost/moderaai"  
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()  # Define `Base` here instead of importing it from `models`
+
+Base = declarative_base()
+
+def get_db():
+    """Dependency for getting a database session."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

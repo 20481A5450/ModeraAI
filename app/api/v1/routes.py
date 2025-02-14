@@ -5,16 +5,17 @@ import redis
 import requests
 from PIL import Image
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Request
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Request, Response
 from sqlalchemy.orm import Session
 from celery.result import AsyncResult
-from app.core.database import SessionLocal
+from app.core.database import SessionLocal, get_db
 from app.api.v1.schemas import TextModerationRequest, TextModerationResponse
 from app.models.moderation import ModerationResult
-from app.services.moderation import moderate_text
+# from app.services.moderation import moderate_text
 from app.core.cache import get_redis
 # from app.workers.tasks import test_celery
 import base64
+
 
 load_dotenv()
 
@@ -25,15 +26,7 @@ if not GOOGLE_MODERATION_API_KEY:
 PERSPECTIVE_API_URL = "https://commentanalyzer.googleapis.com/v1alpha1/comments:analyze"
 GOOGLE_VISION_API_URL = "https://vision.googleapis.com/v1/images:annotate"
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
 router = APIRouter()
-
 
 @router.get("/")
 async def root():
@@ -141,8 +134,10 @@ async def moderate_image_endpoint(file: UploadFile = File(...), db: Session = De
         image_bytes = await file.read()
         image = Image.open(io.BytesIO(image_bytes))
         image.verify()
-    except Exception as e:
+    except UnidentifiedImageError as e:
         raise HTTPException(status_code=400, detail=f"Invalid image file: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error reading image: {str(e)}")
 
     # Convert image to Base64
     image_base64 = base64.b64encode(image_bytes).decode('utf-8')
