@@ -1,13 +1,12 @@
 from fastapi import FastAPI, Request, Response
-from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from starlette.middleware.base import BaseHTTPMiddleware
 import time
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
-
 from fastapi import FastAPI
 from app.api.v1.routes import router
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST  
+sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 
 app = FastAPI(title="ModeraAI")
@@ -33,8 +32,31 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
 # Add middleware to capture metrics for all routes
 app.add_middleware(PrometheusMiddleware)
 
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    """Middleware to measure request count and latency."""
+    start_time = time.time()
+    response = await call_next(request)
+    latency = time.time() - start_time
+
+    # Increment request counter
+    REQUEST_COUNT.labels(
+        method=request.method,
+        endpoint=request.url.path,
+        http_status=response.status_code
+    ).inc()
+
+    # Record request latency
+    REQUEST_LATENCY.labels(
+        method=request.method,
+        endpoint=request.url.path
+    ).observe(latency)
+
+    return response
+
 @app.get("/metrics")
 async def metrics():
+    """Expose Prometheus metrics."""
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 @app.get("/health")

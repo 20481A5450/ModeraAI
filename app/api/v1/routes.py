@@ -1,7 +1,6 @@
 import os
 import json
 import io
-import redis
 import requests
 from PIL import Image
 from dotenv import load_dotenv
@@ -11,11 +10,14 @@ from celery.result import AsyncResult
 from app.core.database import SessionLocal, get_db
 from app.api.v1.schemas import TextModerationRequest, TextModerationResponse
 from app.models.moderation import ModerationResult
-# from app.services.moderation import moderate_text
 from app.core.cache import get_redis
 # from app.workers.tasks import test_celery
 import base64
+from fastapi.responses import PlainTextResponse
+from prometheus_client import Counter
 
+REQUEST_COUNT = Counter('request_count', 'Total request count', ['method', 'endpoint', 'http_status'])
+REQUEST_LATENCY = Counter('request_latency', 'Total time taken for request', ['method', 'endpoint', 'http_status'])
 
 load_dotenv()
 
@@ -39,8 +41,9 @@ async def start_system():
     # Check database
     try:
         db = SessionLocal()
-        if db.execute("SELECT 1"): # Simple query to check DB connection
-            pass  
+        from sqlalchemy.sql import text
+        if db.execute(text("SELECT 1")): # Simple query to check DB connection
+            db_status = f"DB Status Check - Postgres is Up and Running"
         else:
             db_status = f"DB Status Check - Postgres Server is not Running: {str(e)}"  
         db.close()
@@ -49,8 +52,9 @@ async def start_system():
         db_status = f"DB Status Check - Postgres Server is not Running: {str(e)}"
 
     # Check Redis
+    redis_client = await get_redis()
     try:
-        redis_client.set("test", "OK", ex=5)  # Set test value
+        await redis_client.set("test", "OK", ex=5)  # Set test value
         redis_status = "Redis Status Check - Redis is Up and Running"
     except Exception as e:
         redis_status = f"Redis Status Check - Redis Server is not Running: {str(e)}"
@@ -69,12 +73,16 @@ async def start_system():
 
     return {
         "database": db_status,
-        "redis": redis_status
-        # "celery": celery_status
+        "redis": redis_status,
+        # "celery": celery_status,
+        "message": "System is up and running - all services are operational"
     }
     
 @router.post("/moderate/text")
 async def moderate_text_endpoint(request: TextModerationRequest, db: Session = Depends(get_db)):
+    """Endpoint for text moderation using Google Perspective API."""
+    REQUEST_COUNT.labels("POST", "/api/v1/moderate/text", 200).inc()
+    REQUEST_LATENCY.labels("POST", "/api/v1/moderate/text", 200).inc()
     text = request.text
     if not text:
         raise HTTPException(status_code=400, detail="No text provided")
@@ -90,14 +98,15 @@ async def moderate_text_endpoint(request: TextModerationRequest, db: Session = D
         "languages": ["en"],
         "requestedAttributes": {"TOXICITY": {}}
     }
-    
-    response = requests.post(
-        f"{PERSPECTIVE_API_URL}?key={GOOGLE_MODERATION_API_KEY}", 
-        json=request_data
-    )
-    
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Google API error: {response.text}")
+    try:
+        response = requests.post(
+            f"{PERSPECTIVE_API_URL}?key={GOOGLE_MODERATION_API_KEY}",
+            json=request_data,
+            timeout=5  # Add timeout to prevent hanging
+        )
+        response.raise_for_status()  # Raises error for non-200 responses
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"External API error: {str(e)}")
     
     # print(response.json())
     result = response.json()
@@ -111,7 +120,9 @@ async def moderate_text_endpoint(request: TextModerationRequest, db: Session = D
     }
     
     db_entry = ModerationResult(
-        text=text, flagged=flagged, categories={"toxicity_score": toxicity_score}
+        text=text, 
+        flagged=flagged, 
+        categories={"toxicity_score": toxicity_score}
     )
     db.add(db_entry)
     db.commit()
@@ -126,6 +137,8 @@ async def moderate_image_endpoint(file: UploadFile = File(...), db: Session = De
     Endpoint for image moderation using Google Vision API's SafeSearch Detection.
     Supports JPG, JPEG and PNG formats.
     """
+    REQUEST_COUNT.labels("POST", "/api/v1/moderate/image", 200).inc()
+    REQUEST_LATENCY.labels("POST", "/api/v1/moderate/image", 200).inc()
     if file.content_type not in ["image/jpeg", "image/png", "image/jpg"]:
         raise HTTPException(status_code=400, detail="Unsupported file format. Use JPEG or PNG.")
 
@@ -163,17 +176,12 @@ async def moderate_image_endpoint(file: UploadFile = File(...), db: Session = De
     )
     response_data = response.json()
 
-    # Handle API response errors
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Google Vision API error: {response.text}")
-    
-    if "responses" not in response_data or not response_data["responses"]:
-        raise HTTPException(status_code=500, detail="Invalid response from Google Vision API.")
+    try:
+        response_data = response.json()
+        safe_search = response_data["responses"][0].get("safeSearchAnnotation", {})
+    except (KeyError, IndexError) as e:
+        raise HTTPException(status_code=500, detail=f"Unexpected response: {str(e)}")
 
-    if "safeSearchAnnotation" not in response_data["responses"][0]:
-        raise HTTPException(status_code=500, detail=f"Unexpected API response: {response_data}")
-
-    # Extract SafeSearch annotations
     annotations = response_data["responses"][0]["safeSearchAnnotation"]
     flagged = annotations["adult"] in ["LIKELY", "VERY_LIKELY"] or annotations["violence"] in ["LIKELY", "VERY_LIKELY"]
 
@@ -198,44 +206,53 @@ async def moderate_image_endpoint(file: UploadFile = File(...), db: Session = De
 
 @router.get("/moderation/{id}")
 async def get_moderation_result(id: int, db: Session = Depends(get_db)):
-    redis_client = await get_redis()
-    cache_key = f"moderation:{id}"
-    cached_result = await redis_client.get(cache_key)
-    if cached_result:
-        return json.loads(cached_result)
-    
-    result = db.query(ModerationResult).filter(ModerationResult.id == id).first()
-    if not result:
-        raise HTTPException(status_code=404, detail="Moderation result not found")
-    
-    response = {
-        "id": result.id,
-        "text": result.text,
-        "flagged": result.flagged,
-        "categories": result.categories,
-    }
-    
-    await redis_client.set(cache_key, json.dumps(response), ex=3600)
-    return response
-
+    REQUEST_COUNT.labels("GET", "/api/v1/moderation/{id}", 200).inc()
+    REQUEST_LATENCY.labels("GET", "/api/v1/moderation/{id}", 200).inc()
+    try:
+        redis_client = await get_redis()
+        cache_key = f"moderation:{id}"
+        cached_result = await redis_client.get(cache_key)
+        if cached_result:
+            return json.loads(cached_result)
+        
+        result = db.query(ModerationResult).filter(ModerationResult.id == id).first()
+        if not result:
+            raise HTTPException(status_code=404, detail="Moderation result not found")
+        
+        response = {
+            "id": result.id,
+            "text": result.text,
+            "flagged": result.flagged,
+            "categories": result.categories,
+        }
+        
+        await redis_client.set(cache_key, json.dumps(response), ex=3600)
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+        
 @router.get("/stats")
 async def get_moderation_stats(db: Session = Depends(get_db)):
-    redis_client = await get_redis()
-    cache_key = "moderation_stats"
-    cached_stats = await redis_client.get(cache_key)
-    if cached_stats:
-        return json.loads(cached_stats)
-    
-    total_count = db.query(ModerationResult).count()
-    flagged_count = db.query(ModerationResult).filter(ModerationResult.flagged == True).count()
-    non_flagged_count = total_count - flagged_count
-    
-    stats = {
-        "total_moderated": total_count,
-        "flagged_count": flagged_count,
-        "non_flagged_count": non_flagged_count,
-    }
-    
-    await redis_client.set(cache_key, json.dumps(stats), ex=300)
-    return stats
-
+    REQUEST_COUNT.labels("GET", "/api/v1/stats", 200).inc
+    REQUEST_LATENCY.labels("GET", "/api/v1/stats", 200).inc()
+    try:
+        redis_client = await get_redis()
+        cache_key = "moderation_stats"
+        cached_stats = await redis_client.get(cache_key)
+        if cached_stats:
+            return json.loads(cached_stats)
+        
+        total_count = db.query(ModerationResult).count()
+        flagged_count = db.query(ModerationResult).filter(ModerationResult.flagged == True).count()
+        non_flagged_count = total_count - flagged_count
+        
+        stats = {
+            "total_moderated": total_count,
+            "flagged_count": flagged_count,
+            "non_flagged_count": non_flagged_count,
+        }
+        
+        await redis_client.set(cache_key, json.dumps(stats), ex=300)
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
