@@ -9,8 +9,7 @@ from sqlalchemy.orm import Session
 import pytest
 import asyncio
 import os
-
-
+from app.tests.conftest import test_db_session
 
 @pytest.fixture(scope="session")
 def event_loop():
@@ -22,23 +21,12 @@ def event_loop():
 def client():
     return TestClient(app)
 
-# client = TestClient(app)
-
-@pytest.fixture(scope="function")
-def test_db_session():
-    """Create a test database session."""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.rollback()
-        db.close()
-
 @pytest.fixture(autouse=True)
-def setup_and_teardown_db(test_db_session: Session):
-    """Setup and teardown for database tests."""
+def setup_and_teardown_db(test_db_session):
+    """Ensure test DB is clean before each test."""
     test_db_session.query(ModerationResult).delete()
     test_db_session.commit()
+
 
 def test_system_status(client):
     """Test system status endpoint."""
@@ -113,6 +101,7 @@ def test_api_failure_handling(client):
         assert "Google API error" in response.json()["detail"]
     except Exception as e:
         print(e)
+
 # def test_prometheus_metrics():
 #     """Test if Prometheus metrics endpoint is accessible."""
 #     response = client.get("/api/v1/metrics")
