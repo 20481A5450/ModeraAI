@@ -99,7 +99,7 @@ async def moderate_text_endpoint(request: TextModerationRequest, db: Session = D
     if response.status_code != 200:
         raise HTTPException(status_code=500, detail=f"Google API error: {response.text}")
     
-    print(response.json())
+    # print(response.json())
     result = response.json()
     toxicity_score = result["attributeScores"]["TOXICITY"]["summaryScore"]["value"]
     flagged = toxicity_score > 0.5
@@ -195,7 +195,6 @@ async def moderate_image_endpoint(file: UploadFile = File(...), db: Session = De
     # Cache the result for future requests
     await redis_client.setex(cache_key, 3600, json.dumps(moderation_result))
     return moderation_result
-
 
 @router.get("/moderation/{id}")
 async def get_moderation_result(id: int, db: Session = Depends(get_db)):
