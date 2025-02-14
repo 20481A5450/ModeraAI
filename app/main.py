@@ -3,11 +3,21 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import time
 import sys
 import os
-from fastapi import FastAPI
-from app.api.v1.routes import router
+import logging
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST  
+from app.api.v1.routes import router
+
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
+# Setup logging (console + file)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),  # Logs to console
+        logging.FileHandler("logs/moderaai.log"),  # Logs to file
+    ]
+)
 
 app = FastAPI(title="ModeraAI")
 
@@ -26,6 +36,11 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
         # Update Prometheus Metrics
         REQUEST_COUNT.labels(request.method, request.url.path, response.status_code).inc()
         REQUEST_LATENCY.labels(request.method, request.url.path).observe(process_time)
+        
+        # Log request details
+        logging.info(
+            f"METHOD: {request.method} | PATH: {request.url.path} | STATUS: {response.status_code} | TIME: {process_time:.4f}s"
+        )
         
         return response
 
@@ -52,17 +67,26 @@ async def metrics_middleware(request: Request, call_next):
         endpoint=request.url.path
     ).observe(latency)
 
+    # Log request details
+    logging.info(
+        f"METHOD: {request.method} | PATH: {request.url.path} | STATUS: {response.status_code} | LATENCY: {latency:.4f}s"
+    )
+
     return response
 
 @app.get("/metrics")
 async def metrics():
     """Expose Prometheus metrics."""
+    logging.info("Metrics endpoint accessed.")
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 @app.get("/health")
 async def health_check():
+    """Health check endpoint."""
+    logging.info("Health check requested.")
     return {"status": "healthy"}
 
 if __name__ == "__main__":
     import uvicorn
+    logging.info("Starting ModeraAI API Server...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
