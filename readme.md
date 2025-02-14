@@ -28,7 +28,7 @@ ModeraAI is a scalable content moderation system designed to process text and im
 
 ### Prerequisites
 Ensure you have the following installed:
-- Docker & Docker Compose
+- Docker 
 - Python 3.12.0
 - Redis & PostgreSQL (if running without Docker)
 - Prometheus (If running without Docker)
