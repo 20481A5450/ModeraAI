@@ -78,7 +78,7 @@ async def metrics_middleware(request: Request, call_next):
 async def metrics():
     """Expose Prometheus metrics."""
     logging.info("Metrics endpoint accessed.")
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    return Response(content=generate_latest(), media_type="text/plain")
 
 @app.get("/health")
 async def health_check():

@@ -2,8 +2,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 import os
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:root@localhost/moderaai")
-TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "postgresql://postgres:root@localhost/moderaai_test")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://admin:password@localhost:5432/moderaai")
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "postgresql://admin:password@localhost:5432/moderaai_test")
 
 # Check if running tests
 if "PYTEST_CURRENT_TEST" in os.environ:

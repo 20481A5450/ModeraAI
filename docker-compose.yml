@@ -8,11 +8,17 @@ services:
     environment:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: password
-      POSTGRES_DB: moderaai_test
+      POSTGRES_DB: moderaai_db
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d moderaai_db"]
+      interval: 10s
+      retries: 5
+      start_period: 10s
 
   redis:
     image: redis:alpine
@@ -20,26 +26,35 @@ services:
     restart: always
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 3
+      start_period: 5s
 
   moderaai:
-    build: .
+    image: python:3.12-slim
     container_name: moderaai_app
     restart: always
-    depends_on:
-      - postgres
-      - redis
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql://admin:password@postgres/moderaai_test
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://admin:password@moderaai_db/moderaai_db
+      REDIS_URL: redis://moderaai_redis:6379
+    command: >
+      sh -c "apt-get update && apt-get install -y postgresql-client && pip install -r requirements.txt &&
+      until pg_isready -h moderaai_db -p 5432 -U admin; do echo waiting for database; sleep 2; done &&
+      python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    volumes:
+      - .:/app
+    working_dir: /app
 
   prometheus:
     image: prom/prometheus
     container_name: prometheus
     restart: always
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
       - "9090:9090"
 

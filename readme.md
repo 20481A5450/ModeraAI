@@ -6,8 +6,8 @@ ModeraAI is a scalable content moderation system designed to process text and im
 ## Features
 - **Text Moderation API**: Accepts text for moderation with rate limiting and efficient request handling.
 - **Image Moderation API**: Processes images for moderation (if implemented).
-- **AI Service Integration**: Connects with OpenAI’s moderation API and includes a fallback mechanism.
-- **Queue Management**: Uses Celery with Redis for asynchronous task processing.
+- **AI Service Integration**: Connects with OpenAI’s moderation API and includes a fallback mechanism to Google Perspective API if OpenAI is unavailable.
+- **Queue Management**: Uses Celery with Redis for asynchronous task processing (skipped due to Pool issues on Windows).
 - **Data Management**: Stores moderation results in PostgreSQL with optimized indexing and migrations.
 - **Monitoring & Logging**: Structured logging and Prometheus metrics collection.
 - **Dockerized Deployment**: Includes `docker-compose` for easy setup.
@@ -17,7 +17,7 @@ ModeraAI is a scalable content moderation system designed to process text and im
 - **FastAPI** for API development
 - **PostgreSQL** for data storage
 - **Redis** for caching and queue management
-- **Celery** for asynchronous task processing
+- **Celery** for asynchronous task processing (skipped on Windows)
 - **Docker & docker-compose** for containerization
 - **Prometheus** for monitoring
 - **Pydantic** for data validation
@@ -42,7 +42,7 @@ Ensure you have the following installed:
    ```sh
    cp .env.example .env
    ```
-   Configure the `.env` file with the required database and API keys.
+   Configure the `.env` file with the required database and API keys. If OpenAI API is unavailable, configure Google Perspective API as a fallback.
 
 3. Start the services using Docker Compose:
    ```sh
@@ -103,14 +103,15 @@ ModeraAI follows a **microservices-based** design with the following components:
 1. **FastAPI Service**: Handles API requests and moderation logic.
 2. **PostgreSQL Database**: Stores moderation results efficiently.
 3. **Redis Cache**: Speeds up response times by caching results.
-4. **Celery Workers**: Asynchronously process moderation tasks.
+4. **Celery Workers**: Asynchronously process moderation tasks (skipped on Windows due to Pool issues).
 5. **Prometheus**: Exposes monitoring metrics.
 
 ### Performance Considerations
-- **Asynchronous Processing**: FastAPI and Celery ensure high concurrency.
+- **Asynchronous Processing**: FastAPI ensures high concurrency.
 - **Caching**: Redis caches results to minimize API calls.
 - **Rate Limiting**: Protects against excessive requests.
 - **Database Indexing**: Optimized PostgreSQL queries.
+- **API Fallback**: If OpenAI API is unavailable, Google Perspective API is used.
 
 ## Load Testing
 (Results to be added after testing)
@@ -118,12 +119,6 @@ ModeraAI follows a **microservices-based** design with the following components:
 ## Testing
 To run unit tests:
 ```sh
-pytest
+$env:PYTHONPATH = "$(Get-Location)"  # Add current directory to Python path
+pytest 
 ```
-
-## Contributors
-- **Your Name** (your.email@example.com)
-
-## License
-This project is licensed under the MIT License.
-
