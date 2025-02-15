@@ -5,16 +5,10 @@ ModeraAI is a scalable content moderation system designed to process text and im
 
 ## Features
 - **Text Moderation API**: Accepts text for moderation with rate limiting and efficient request handling.
-<<<<<<< HEAD
-- **Image Moderation API**: Processes images for moderation (if implemented).
-- **AI Service Integration**: Connects with OpenAI’s moderation API and includes a fallback mechanism to Google Perspective API if OpenAI is unavailable.
-- **Queue Management**: Uses Celery with Redis for asynchronous task processing (skipped due to Pool issues on Windows).
-=======
 - **Image Moderation API**: Processes images for moderation.
 - **AI Service Integration**: Connects with OpenAI’s moderation API and includes but not implemented due to free tier limit error.
   Implemented with Google Perspective API  - https://developers.perspectiveapi.com/s/docs-get-started?language=en_US
 - **Queue Management**: Uses Celery with Redis for asynchronous task processing.
->>>>>>> 51d6371b406c56a9796265be22e18d2d21332480
 - **Data Management**: Stores moderation results in PostgreSQL with optimized indexing and migrations.
 - **Monitoring & Logging**: Structured logging and Prometheus metrics collection.
 - **Dockerized Deployment**: Includes `docker-compose` for easy setup.
@@ -24,11 +18,7 @@ ModeraAI is a scalable content moderation system designed to process text and im
 - **FastAPI** for API development
 - **PostgreSQL** for data storage
 - **Redis** for caching and queue management
-<<<<<<< HEAD
 - **Celery** for asynchronous task processing (skipped on Windows)
-=======
-- **Celery** for asynchronous task processing (Problem with Windows environment)
->>>>>>> 51d6371b406c56a9796265be22e18d2d21332480
 - **Docker & docker-compose** for containerization
 - **Prometheus** for monitoring
 - **Pydantic** for data validation
